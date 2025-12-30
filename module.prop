@@ -1,0 +1,8 @@
+id=custos
+name=Custos Anti-Forensic Defense
+version=v1.0.0
+versionCode=100
+author=E1DIGITAL
+description=Paranoid-level defensive module that neutralizes forensic extraction vectors from Cellebrite UFED, Oxygen Forensic, and MOBILedit. Implements USB lockdown, ADB neutralization, key eviction, and hostile custody mode.
+updateJson=
+

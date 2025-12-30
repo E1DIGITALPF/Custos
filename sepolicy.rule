@@ -1,0 +1,268 @@
+# Custos Anti-Forensic Defense Module
+# SELinux Policy Rules
+#
+# These rules are processed by Magisk's sepolicy patching mechanism
+# They provide necessary permissions for the module while restricting
+# forensic tool capabilities.
+#
+##########################################################################################
+#
+# LEGAL DEFENSIBILITY DOCUMENTATION
+# ==================================
+#
+# This file documents the security rationale for each policy rule.
+# Each rule is designed for LEGITIMATE PRIVACY PROTECTION purposes:
+#
+# 1. Protection against unauthorized data extraction
+# 2. Defense against malware that uses forensic tool techniques
+# 3. Compliance with data protection regulations (GDPR, CCPA)
+# 4. Protection of privileged/confidential communications
+#
+# The module does NOT:
+# - Destroy or modify user data
+# - Interfere with lawful court-ordered access (device can be unlocked)
+# - Hide evidence of criminal activity
+# - Prevent device functionality for the legitimate owner
+#
+# RULE DOCUMENTATION FORMAT:
+# Each rule includes:
+# - Rule: The SELinux policy statement
+# - Reason: Security justification
+# - Forensic impact: What forensic capability is blocked
+# - Legal basis: Why this protection is legitimate
+#
+##########################################################################################
+
+##########################################################################################
+# MODULE DAEMON PERMISSIONS
+##########################################################################################
+
+# Create a new domain for the custos daemon
+type custos_daemon domain
+
+# Allow daemon to execute shell commands
+allow custos_daemon shell_exec exec_type file { execute execute_no_trans }
+allow custos_daemon system_file file { execute execute_no_trans }
+
+# Allow daemon to access kernel keyring (for key eviction)
+allow custos_daemon kernel key { search write setattr view read link }
+allow custos_daemon self key { search write setattr view read link }
+
+# Allow daemon to manipulate USB gadget sysfs
+allow custos_daemon sysfs file { read write open getattr setattr }
+allow custos_daemon sysfs_usb_supply file { read write open getattr setattr }
+
+# Allow daemon to access configfs for USB gadget control
+allow custos_daemon configfs dir { search read open getattr write add_name remove_name }
+allow custos_daemon configfs file { read write open getattr setattr create unlink }
+allow custos_daemon configfs lnk_file { read write create unlink }
+
+# Allow daemon to interact with USB devices
+allow custos_daemon usb_device chr_file { read write ioctl open getattr }
+allow custos_daemon usb_device dir { search read }
+
+# Allow daemon to modify system properties
+allow custos_daemon property_socket sock_file { write }
+allow custos_daemon init unix_stream_socket { connectto }
+allow custos_daemon default_prop property_service { set }
+
+# Allow daemon to access device encryption state
+allow custos_daemon vold_data_file file { read }
+allow custos_daemon vold unix_stream_socket { connectto }
+
+# Allow daemon to interact with input devices (for trigger detection)
+allow custos_daemon input_device chr_file { read ioctl open }
+allow custos_daemon input_device dir { search read }
+
+# Allow daemon to access power management
+allow custos_daemon sysfs_power file { read write }
+
+# Allow daemon to send signals to other processes
+allow custos_daemon adbd process { signal sigkill }
+allow custos_daemon su process { signal sigkill }
+
+# Allow daemon to access its own data directory
+allow custos_daemon custos_data_file dir { create read write search add_name remove_name getattr setattr }
+allow custos_daemon custos_data_file file { create read write open getattr setattr unlink rename }
+
+##########################################################################################
+# ADB RESTRICTION POLICIES
+##########################################################################################
+
+# IMPORTANT: These rules are ALWAYS active once the module is installed.
+# For conditional enforcement based on state, the module uses runtime mechanisms
+# (process killing, socket blocking, bind mounts) rather than SELinux.
+#
+# SELinux provides a baseline defense layer that cannot be bypassed even if
+# the runtime enforcement is somehow disabled.
+#
+# RATIONALE FOR EACH RULE:
+# - Forensic tools (Cellebrite, Oxygen, MOBILedit) use ADB to:
+#   1. Access content providers for contacts, SMS, media
+#   2. Execute privileged commands via DAC override
+#   3. Establish interactive shells via devpts
+#   4. Use ptrace for process inspection
+#   5. Connect over TCP when USB is blocked
+
+# Rule: Block adbd access to content providers
+# Reason: Prevents logical extraction of contacts, SMS, call logs
+# Forensic impact: Blocks Cellebrite/Oxygen "logical extraction" mode
+deny adbd content_provider file { read write }
+deny adbd contacts_data_file file { read write open getattr }
+deny adbd sms_data_file file { read write open getattr }
+deny adbd media_data_file file { read write open getattr }
+
+# Rule: Block DAC (Discretionary Access Control) override
+# Reason: Prevents adbd from bypassing file permissions
+# Forensic impact: Blocks "file system extraction" on rooted devices
+deny adbd self capability { dac_override dac_read_search }
+
+# Rule: Block pseudo-terminal access
+# Reason: Prevents interactive shell sessions
+# Forensic impact: Blocks forensic tool command execution
+# NOTE: This is aggressive and may cause some legitimate ADB issues
+#       when module is installed. Accept this tradeoff for security.
+deny adbd devpts chr_file { read write ioctl getattr }
+
+# Rule: Block process tracing
+# Reason: Prevents memory inspection and process debugging
+# Forensic impact: Blocks runtime data extraction from app memory
+deny adbd self capability { sys_ptrace }
+
+# Rule: Block network capabilities for ADB over TCP
+# Reason: Forensic tools sometimes bypass USB blocking with wireless ADB
+# Forensic impact: Blocks Oxygen Forensic wireless extraction
+deny adbd self capability { net_raw net_admin }
+deny adbd port tcp_socket { name_bind name_connect }
+
+##########################################################################################
+# USB GADGET PROTECTION
+##########################################################################################
+
+# RATIONALE:
+# Forensic tools attempt to re-enable USB data modes (MTP, ADB) by:
+# 1. Writing to sysfs USB gadget files
+# 2. Modifying ConfigFS USB gadget configuration
+# 3. Using shell scripts to toggle USB state
+#
+# These rules prevent ANY process except init/kernel from modifying USB config.
+# This is a defense-in-depth layer on top of the runtime USB lockdown.
+
+# Rule: Block untrusted apps from USB gadget access
+# Reason: Malicious apps could re-enable USB data
+# Impact: Apps cannot toggle USB modes
+deny untrusted_app sysfs_usb file { write setattr }
+deny untrusted_app configfs file { write setattr }
+deny untrusted_app configfs dir { write add_name remove_name }
+
+# Rule: Block platform apps from USB gadget modification
+# Reason: Even system apps should not bypass USB lockdown
+# Impact: Settings app changes are overridden by runtime enforcement
+deny platform_app sysfs_usb file { write setattr }
+deny platform_app configfs file { write setattr }
+
+# Rule: Block shell from USB gadget modification
+# Reason: Forensic tools execute shell scripts to enable ADB
+# Impact: Blocks `adb shell` commands that try to re-enable USB
+# NOTE: This is critical - forensic tools often inject shell scripts
+deny shell sysfs_usb file { write setattr }
+deny shell configfs file { write setattr }
+
+##########################################################################################
+# SENSITIVE DATA PROTECTION
+##########################################################################################
+
+# Protect sensitive content providers from unauthorized access
+# These rules block forensic tool data extraction
+
+# Deny untrusted apps from contacts provider
+deny untrusted_app contacts_provider file { read }
+deny untrusted_app contacts_provider dir { search read }
+
+# Deny untrusted apps from SMS provider
+deny untrusted_app sms_provider file { read }
+deny untrusted_app sms_provider dir { search read }
+
+# Deny untrusted apps from call log provider
+deny untrusted_app call_log_provider file { read }
+deny untrusted_app call_log_provider dir { search read }
+
+# Deny untrusted apps from media provider
+deny untrusted_app media_provider file { read }
+deny untrusted_app media_provider dir { search read }
+
+##########################################################################################
+# MODULE SELF-PROTECTION
+##########################################################################################
+
+# Prevent modification of module files
+neverallow * custos_daemon_exec file { write append }
+neverallow * custos_data_file file { write append } -custos_daemon
+
+# Prevent disabling of the module
+neverallow * magisk_file file { unlink rename } -init -kernel
+
+# Prevent killing the daemon
+neverallow { domain -init -kernel -custos_daemon } custos_daemon process { sigkill signal }
+
+##########################################################################################
+# FORENSIC TOOL FINGERPRINTING PROTECTION
+##########################################################################################
+
+# Deny access to common forensic information sources
+
+# Block access to device identifiers
+deny untrusted_app proc_cpuinfo file { read }
+deny untrusted_app sysfs_serial file { read }
+
+# Block access to boot verification state
+deny untrusted_app sysfs_dm_verity file { read }
+
+# Block access to partition information
+deny untrusted_app block_device blk_file { read getattr }
+deny untrusted_app dm_device blk_file { read getattr }
+
+##########################################################################################
+# RECOVERY MODE RESTRICTIONS
+##########################################################################################
+
+# When in recovery mode, apply additional restrictions
+
+# Deny recovery from accessing userdata directly (if booted with this policy)
+deny recovery userdata_block_device blk_file { read write }
+deny recovery metadata_block_device blk_file { read write }
+
+##########################################################################################
+# LOGGING AND AUDITING
+##########################################################################################
+
+# Enable auditing for security-relevant operations
+auditallow adbd usb_device chr_file { read write }
+auditallow shell sysfs_usb file { write }
+auditallow untrusted_app contacts_provider file { read }
+
+##########################################################################################
+# TYPE DECLARATIONS (for custom types)
+##########################################################################################
+
+# Declare types for module data
+type custos_data_file file_type data_file_type
+
+# Declare type for module executable
+type custos_daemon_exec exec_type file_type
+
+##########################################################################################
+# TRANSITIONS
+##########################################################################################
+
+# Transition to custos_daemon domain when executing the daemon
+type_transition init custos_daemon_exec:process custos_daemon
+type_transition magisk custos_daemon_exec:process custos_daemon
+
+##########################################################################################
+# PERMISSIVE DOMAIN (for debugging only - remove in production)
+##########################################################################################
+
+# Uncomment for testing (NEVER in production)
+# permissive custos_daemon
+
